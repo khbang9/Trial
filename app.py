@@ -4,12 +4,12 @@ import io
 import queue
 import threading
 import time
-from typing import Callable, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 import mss
 import numpy as np
 import pyautogui
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from PIL import Image
@@ -44,22 +44,34 @@ class ClickAction(BaseModel):
     x: int = Field(ge=0)
     y: int = Field(ge=0)
     clicks: int = Field(default=1, ge=1, le=20)
-    interval_ms: int = Field(default=100, ge=0, le=10_000)
+    interval_ms: int = Field(default=80, ge=0, le=10_000)
     button: Literal["left", "middle", "right"] = "left"
     label: str = Field(default="Action")
 
 
-class MonitorConfig(BaseModel):
+class MonitorRule(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=100)
     region: MonitorRegion
     threshold: float = Field(default=12.0, ge=0.1, le=255.0)
-    poll_interval_ms: int = Field(default=250, ge=50, le=5_000)
     cooldown_ms: int = Field(default=1000, ge=0, le=60_000)
     actions: List[ClickAction]
 
     @model_validator(mode="after")
-    def ensure_actions(self) -> "MonitorConfig":
+    def _check_actions(self) -> "MonitorRule":
         if not self.actions:
-            raise ValueError("At least one click action is required")
+            raise ValueError("At least one action is required for each rule")
+        return self
+
+
+class MonitorConfig(BaseModel):
+    poll_interval_ms: int = Field(default=250, ge=50, le=5_000)
+    rules: List[MonitorRule]
+
+    @model_validator(mode="after")
+    def _check_rules(self) -> "MonitorConfig":
+        if not self.rules:
+            raise ValueError("At least one monitoring rule is required")
         return self
 
 
@@ -70,18 +82,16 @@ class HotkeyConfig(BaseModel):
 
 class StatusOverlay:
     def __init__(self) -> None:
-        self._queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._q: "queue.Queue[tuple[str, str]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
-        self._ready = threading.Event()
 
-    def start(self) -> None:
+    def _ensure(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        self._ready.wait(timeout=1.0)
 
-    def _run(self) -> None:  # pragma: no cover - GUI dependent
+    def _run(self) -> None:  # pragma: no cover
         try:
             import tkinter as tk
         except Exception:
@@ -90,18 +100,16 @@ class StatusOverlay:
         root = tk.Tk()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.attributes("-alpha", 0.86)
-        root.geometry("250x40+15+15")
+        root.attributes("-alpha", 0.85)
+        root.geometry("290x42+14+14")
         root.configure(bg="#0f172a")
-
         label = tk.Label(root, text="", fg="#e2e8f0", bg="#0f172a", font=("Arial", 10, "bold"))
         label.pack(fill="both", expand=True)
         root.withdraw()
-        self._ready.set()
 
         def pump() -> None:
-            while not self._queue.empty():
-                mode, text = self._queue.get_nowait()
+            while not self._q.empty():
+                mode, text = self._q.get_nowait()
                 if mode == "show":
                     label.configure(text=text, bg="#0f172a")
                     root.configure(bg="#0f172a")
@@ -110,7 +118,7 @@ class StatusOverlay:
                     label.configure(text=text, bg="#14532d")
                     root.configure(bg="#14532d")
                     root.deiconify()
-                    root.after(1800, lambda: self._queue.put(("hide", "")))
+                    root.after(1400, lambda: self._q.put(("show", text)))
                 elif mode == "hide":
                     root.withdraw()
             root.after(120, pump)
@@ -118,82 +126,47 @@ class StatusOverlay:
         root.after(120, pump)
         root.mainloop()
 
-    def show_monitoring(self, text: str) -> None:
-        self.start()
-        self._queue.put(("show", text))
+    def show(self, text: str) -> None:
+        self._ensure()
+        self._q.put(("show", text))
 
-    def show_event(self, text: str) -> None:
-        self.start()
-        self._queue.put(("event", text))
+    def event(self, text: str) -> None:
+        self._ensure()
+        self._q.put(("event", text))
 
     def hide(self) -> None:
-        self._queue.put(("hide", ""))
+        self._q.put(("hide", ""))
 
 
 class MonitorState:
     def __init__(self, overlay: StatusOverlay) -> None:
         self.config: Optional[MonitorConfig] = None
-        self.running = False
-        self.last_diff: float = 0.0
-        self.last_triggered_at: Optional[float] = None
-        self.last_message: str = "대기중"
         self.hotkeys = HotkeyConfig()
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
+        self.running = False
+        self.last_diff_by_rule: Dict[str, float] = {}
+        self.last_message = "대기중"
+        self.last_triggered_rule: Optional[str] = None
         self._overlay = overlay
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
 
     def status(self) -> dict:
         with self._lock:
             return {
                 "running": self.running,
-                "last_diff": self.last_diff,
-                "last_triggered_at": self.last_triggered_at,
                 "last_message": self.last_message,
-                "hotkeys": self.hotkeys.model_dump(),
+                "last_triggered_rule": self.last_triggered_rule,
+                "last_diff_by_rule": self.last_diff_by_rule,
                 "config": self.config.model_dump() if self.config else None,
+                "hotkeys": self.hotkeys.model_dump(),
             }
 
     def set_config(self, config: MonitorConfig) -> None:
         with self._lock:
             self.config = config
-            self.last_message = "설정 저장 완료"
-
-    def start(self, config: Optional[MonitorConfig] = None, source: str = "버튼") -> None:
-        if config is not None:
-            with self._lock:
-                self.config = config
-        with self._lock:
-            cfg = self.config
-        if cfg is None:
-            raise RuntimeError("모니터링 설정이 없습니다. 먼저 설정 후 시작하세요.")
-
-        self.stop(show_message=False)
-        with self._lock:
-            self.last_diff = 0.0
-            self.last_triggered_at = None
-            self.last_message = f"모니터링중 ({source} 시작)"
-            self.running = True
-            self._stop_event.clear()
-
-        self._overlay.show_monitoring(f"모니터링중 · 중지:{self.hotkeys.stop_hotkey}")
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self, show_message: bool = True, source: str = "중지") -> None:
-        thread = self._thread
-        if thread and thread.is_alive() and thread is not threading.current_thread():
-            self._stop_event.set()
-            thread.join(timeout=2)
-        else:
-            self._stop_event.set()
-
-        with self._lock:
-            self.running = False
-            if show_message:
-                self.last_message = f"모니터링 해제 ({source})"
-        self._thread = None
-        self._overlay.hide()
+            self.last_message = f"설정 저장 완료 ({len(config.rules)}개 구역)"
+            self.last_diff_by_rule = {r.id: 0.0 for r in config.rules}
 
     @staticmethod
     def _capture_region(region: MonitorRegion) -> np.ndarray:
@@ -203,121 +176,113 @@ class MonitorState:
             arr = np.array(shot, dtype=np.uint8)
             return arr[:, :, :3]
 
-    def _perform_actions(self, actions: List[ClickAction]) -> None:
-        for action in actions:
-            pyautogui.click(
-                x=action.x,
-                y=action.y,
-                clicks=action.clicks,
-                interval=action.interval_ms / 1000,
-                button=action.button,
-            )
+    @staticmethod
+    def _run_actions(actions: List[ClickAction]) -> None:
+        for act in actions:
+            pyautogui.click(x=act.x, y=act.y, clicks=act.clicks, interval=act.interval_ms / 1000, button=act.button)
 
-    def _run_loop(self) -> None:
-        prev_frame: Optional[np.ndarray] = None
-        while not self._stop_event.is_set():
+    def start(self, source: str = "버튼") -> None:
+        with self._lock:
+            cfg = self.config
+        if cfg is None:
+            raise RuntimeError("모니터링 설정이 없습니다. 먼저 구역 규칙을 저장하세요.")
+
+        self.stop(show_message=False)
+        with self._lock:
+            self.running = True
+            self.last_message = f"모니터링 시작 ({source})"
+            self.last_triggered_rule = None
+            self._stop.clear()
+        self._overlay.show(f"모니터링중 · 중지:{self.hotkeys.stop_hotkey}")
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self, show_message: bool = True, source: str = "중지") -> None:
+        t = self._thread
+        self._stop.set()
+        if t and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=2)
+        with self._lock:
+            self.running = False
+            if show_message:
+                self.last_message = f"모니터링 해제 ({source})"
+        self._overlay.hide()
+        self._thread = None
+
+    def _loop(self) -> None:
+        prev_frames: Dict[str, np.ndarray] = {}
+        last_trigger_at: Dict[str, float] = {}
+
+        while not self._stop.is_set():
             with self._lock:
-                config = self.config
-            if not config:
+                cfg = self.config
+            if cfg is None:
                 break
 
-            current = self._capture_region(config.region)
-            if prev_frame is not None:
-                diff = float(np.mean(np.abs(current.astype(np.float32) - prev_frame.astype(np.float32))))
-                trigger_now = False
-                with self._lock:
-                    self.last_diff = diff
-                    if diff >= config.threshold:
-                        now = time.time()
-                        if not self.last_triggered_at or now - self.last_triggered_at >= (config.cooldown_ms / 1000):
-                            self.last_triggered_at = now
-                            trigger_now = True
-                if trigger_now:
-                    self._perform_actions(config.actions)
+            for rule in cfg.rules:
+                current = self._capture_region(rule.region)
+                prev = prev_frames.get(rule.id)
+                if prev is not None:
+                    diff = float(np.mean(np.abs(current.astype(np.float32) - prev.astype(np.float32))))
+                    now = time.time()
+                    trigger = diff >= rule.threshold and (now - last_trigger_at.get(rule.id, 0) >= rule.cooldown_ms / 1000)
                     with self._lock:
-                        self.last_message = "액션 수행됨 · 모니터링 자동 해제"
-                        self.running = False
-                    self._overlay.show_event("액션 수행됨 · 자동 해제")
-                    self._stop_event.set()
-                    break
-            prev_frame = current
-            time.sleep(config.poll_interval_ms / 1000)
+                        self.last_diff_by_rule[rule.id] = diff
+                    if trigger:
+                        self._run_actions(rule.actions)
+                        last_trigger_at[rule.id] = now
+                        with self._lock:
+                            self.last_triggered_rule = rule.name
+                            self.last_message = f"액션 수행: {rule.name}"
+                        self._overlay.event(f"액션 수행: {rule.name}")
+                prev_frames[rule.id] = current
+
+            time.sleep(cfg.poll_interval_ms / 1000)
 
         with self._lock:
             self.running = False
 
 
 class HotkeyManager:
-    def __init__(self, monitor_state: MonitorState) -> None:
+    def __init__(self, state: MonitorState) -> None:
+        self._state = state
         self._listener: Optional[keyboard.GlobalHotKeys] = None
-        self._monitor_state = monitor_state
-
-    @staticmethod
-    def _combo_variants(combo: str) -> list[str]:
-        mapping = {
-            "Ctrl": "<ctrl>",
-            "Alt": "<alt>",
-            "Shift": "<shift>",
-            "Meta": "<cmd>",
-        }
-        tokens = [t.strip() for t in combo.split("+") if t.strip()]
-        if not tokens:
-            raise ValueError("빈 단축키는 사용할 수 없습니다.")
-
-        mods = [mapping[t] for t in tokens if t in mapping]
-        keys = [t for t in tokens if t not in mapping]
-        if len(keys) != 1:
-            raise ValueError("단축키는 마지막에 키 1개를 포함해야 합니다. 예: Ctrl+Alt+S")
-
-        k = keys[0].lower()
-        specials = {
-            "space", "enter", "tab", "esc", "escape", "up", "down", "left", "right",
-            "home", "end", "pageup", "pagedown", "insert", "delete", "backspace"
-        }
-
-        if k.startswith("f") and k[1:].isdigit():
-            variants = [f"<{k}>"]
-        elif k in specials:
-            alias = "esc" if k == "escape" else k
-            variants = [f"<{alias}>"]
-        elif len(k) == 1:
-            variants = [k, f"<{k}>"]
-        else:
-            variants = [f"<{k}>", k]
-
-        return ["+".join(mods + [v]) for v in variants]
 
     @staticmethod
     def _resolve_combo(combo: str) -> str:
-        last_error: Optional[Exception] = None
-        for candidate in HotkeyManager._combo_variants(combo):
-            try:
-                keyboard.HotKey.parse(candidate)
-                return candidate
-            except Exception as exc:
-                last_error = exc
-        raise ValueError(f"지원하지 않는 단축키 형식: {combo} ({last_error})")
-
-    def _safe_start(self, source: str) -> None:
-        try:
-            self._monitor_state.start(source=source)
-        except Exception as exc:
-            self._monitor_state.last_message = f"시작 실패: {exc}"
-
-    def _safe_stop(self, source: str) -> None:
-        try:
-            self._monitor_state.stop(source=source)
-        except Exception as exc:
-            self._monitor_state.last_message = f"중지 실패: {exc}"
+        map_mod = {"Ctrl": "<ctrl>", "Alt": "<alt>", "Shift": "<shift>", "Meta": "<cmd>"}
+        tokens = [t.strip() for t in combo.split("+") if t.strip()]
+        mods = [map_mod[t] for t in tokens if t in map_mod]
+        keys = [t for t in tokens if t not in map_mod]
+        if len(keys) != 1:
+            raise ValueError("키 1개 + 보조키 조합만 지원")
+        key = keys[0].lower()
+        if key.startswith("f") and key[1:].isdigit():
+            key_token = f"<{key}>"
+        elif len(key) == 1:
+            key_token = key
+        else:
+            key_token = f"<{key}>"
+        candidate = "+".join(mods + [key_token])
+        keyboard.HotKey.parse(candidate)
+        return candidate
 
     def apply(self, cfg: HotkeyConfig) -> None:
-        start_key = self._resolve_combo(cfg.start_hotkey)
-        stop_key = self._resolve_combo(cfg.stop_hotkey)
+        start = self._resolve_combo(cfg.start_hotkey)
+        stop = self._resolve_combo(cfg.stop_hotkey)
+
+        def safe(fn):
+            def _wrap():
+                try:
+                    fn()
+                except Exception as exc:
+                    self._state.last_message = f"단축키 처리 실패: {exc}"
+            return _wrap
 
         new_listener = keyboard.GlobalHotKeys(
             {
-                start_key: lambda: self._safe_start(source=f"단축키 {cfg.start_hotkey}"),
-                stop_key: lambda: self._safe_stop(source=f"단축키 {cfg.stop_hotkey}"),
+                start: safe(lambda: self._state.start(source=f"단축키 {cfg.start_hotkey}")),
+                stop: safe(lambda: self._state.stop(source=f"단축키 {cfg.stop_hotkey}")),
             }
         )
         new_listener.start()
@@ -325,21 +290,21 @@ class HotkeyManager:
             self._listener.stop()
         self._listener = new_listener
 
+
 overlay = StatusOverlay()
 monitor_state = MonitorState(overlay)
 hotkey_manager = HotkeyManager(monitor_state)
 try:
     hotkey_manager.apply(monitor_state.hotkeys)
 except Exception:
-    monitor_state.last_message = "전역 단축키 초기화 실패 (앱은 계속 실행됨)"
+    monitor_state.last_message = "전역 단축키 초기화 실패 (앱은 실행됨)"
 
 
 def _build_overlay_root(title: str):
     try:
         import tkinter as tk
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError("Tkinter is not available on this Python environment.") from exc
-
+        raise RuntimeError("Tkinter is not available") from exc
     root = tk.Tk()
     root.title(title)
     root.attributes("-fullscreen", True)
@@ -355,7 +320,6 @@ def select_region_overlay() -> MonitorRegion:
     tk, root, canvas = _build_overlay_root("영역 선택")
     result: dict[str, int] = {}
     drag: dict[str, int] = {}
-
     canvas.create_text(30, 30, anchor="nw", fill="#7dd3fc", font=("Arial", 16, "bold"), text="드래그로 영역 선택 · ESC 취소")
     rect_id: Optional[int] = None
 
@@ -381,7 +345,6 @@ def select_region_overlay() -> MonitorRegion:
     canvas.bind("<B1-Motion>", on_drag)
     canvas.bind("<ButtonRelease-1>", on_release)
     root.bind("<Escape>", lambda _: root.quit())
-
     root.mainloop()
     root.destroy()
     if not result:
@@ -392,14 +355,8 @@ def select_region_overlay() -> MonitorRegion:
 def select_point_overlay() -> Point:
     tk, root, canvas = _build_overlay_root("클릭 위치 선택")
     result: dict[str, int] = {}
-
     canvas.create_text(30, 30, anchor="nw", fill="#86efac", font=("Arial", 16, "bold"), text="클릭할 위치를 1번 클릭 · ESC 취소")
-
-    def on_click(event: tk.Event) -> None:
-        result.update({"x": int(event.x), "y": int(event.y)})
-        root.quit()
-
-    canvas.bind("<ButtonPress-1>", on_click)
+    canvas.bind("<ButtonPress-1>", lambda e: (result.update({"x": int(e.x), "y": int(e.y)}), root.quit()))
     root.bind("<Escape>", lambda _: root.quit())
     root.mainloop()
     root.destroy()
@@ -443,12 +400,11 @@ def select_point() -> JSONResponse:
     return JSONResponse({"ok": True, "point": point.model_dump()})
 
 
-
-
 @app.post("/api/config")
 def set_config(config: MonitorConfig) -> JSONResponse:
     monitor_state.set_config(config)
     return JSONResponse({"ok": True, "message": "Config saved."})
+
 
 @app.post("/api/hotkeys")
 def set_hotkeys(cfg: HotkeyConfig) -> JSONResponse:
@@ -468,10 +424,10 @@ def status() -> JSONResponse:
 
 
 @app.post("/api/start")
-def start(config: MonitorConfig) -> JSONResponse:
+def start(_: Optional[dict] = Body(default=None)) -> JSONResponse:
     try:
-        monitor_state.start(config=config, source="버튼")
-    except Exception as exc:  # pragma: no cover
+        monitor_state.start(source="버튼")
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse({"ok": True, "message": "Monitoring started."})
 
