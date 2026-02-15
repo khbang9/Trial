@@ -34,6 +34,11 @@ class MonitorRegion(BaseModel):
     height: int = Field(gt=0)
 
 
+class Point(BaseModel):
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+
+
 class ClickAction(BaseModel):
     x: int = Field(ge=0)
     y: int = Field(ge=0)
@@ -145,6 +150,127 @@ class MonitorState:
 monitor_state = MonitorState()
 
 
+def _build_overlay_root(title: str):
+    try:
+        import tkinter as tk
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Tkinter is not available on this Python environment.") from exc
+
+    root = tk.Tk()
+    root.title(title)
+    root.attributes("-fullscreen", True)
+    root.attributes("-topmost", True)
+    root.attributes("-alpha", 0.25)
+    root.configure(bg="black")
+    canvas = tk.Canvas(root, bg="black", highlightthickness=0, cursor="cross")
+    canvas.pack(fill="both", expand=True)
+    return tk, root, canvas
+
+
+def select_region_overlay() -> MonitorRegion:
+    tk, root, canvas = _build_overlay_root("영역 선택")
+    result: dict[str, int] = {}
+    drag: dict[str, int] = {}
+
+    canvas.create_text(
+        30,
+        30,
+        anchor="nw",
+        fill="#7dd3fc",
+        font=("Arial", 16, "bold"),
+        text="드래그로 영역 선택 · ESC 취소",
+    )
+
+    rect_id: Optional[int] = None
+
+    def on_press(event: tk.Event) -> None:
+        nonlocal rect_id
+        drag["x1"] = int(event.x)
+        drag["y1"] = int(event.y)
+        if rect_id:
+            canvas.delete(rect_id)
+        rect_id = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#22d3ee", width=3)
+
+    def on_drag(event: tk.Event) -> None:
+        if not rect_id:
+            return
+        canvas.coords(rect_id, drag["x1"], drag["y1"], event.x, event.y)
+
+    def on_release(event: tk.Event) -> None:
+        x1, y1 = drag.get("x1", 0), drag.get("y1", 0)
+        x2, y2 = int(event.x), int(event.y)
+        result.update(
+            {
+                "x": min(x1, x2),
+                "y": min(y1, y2),
+                "width": max(1, abs(x2 - x1)),
+                "height": max(1, abs(y2 - y1)),
+            }
+        )
+        root.quit()
+
+    def on_escape(_: tk.Event) -> None:
+        root.quit()
+
+    canvas.bind("<ButtonPress-1>", on_press)
+    canvas.bind("<B1-Motion>", on_drag)
+    canvas.bind("<ButtonRelease-1>", on_release)
+    root.bind("<Escape>", on_escape)
+
+    root.mainloop()
+    root.destroy()
+
+    if not result:
+        raise RuntimeError("Selection cancelled")
+
+    return MonitorRegion(**result)
+
+
+def select_point_overlay() -> Point:
+    tk, root, canvas = _build_overlay_root("클릭 위치 선택")
+    result: dict[str, int] = {}
+
+    canvas.create_text(
+        30,
+        30,
+        anchor="nw",
+        fill="#86efac",
+        font=("Arial", 16, "bold"),
+        text="클릭할 위치를 1번 클릭 · ESC 취소",
+    )
+
+    cursor_text_id = canvas.create_text(
+        30,
+        60,
+        anchor="nw",
+        fill="#d1fae5",
+        font=("Arial", 12),
+        text="좌표: -",
+    )
+
+    def on_move(event: tk.Event) -> None:
+        canvas.itemconfigure(cursor_text_id, text=f"좌표: ({int(event.x)}, {int(event.y)})")
+
+    def on_click(event: tk.Event) -> None:
+        result.update({"x": int(event.x), "y": int(event.y)})
+        root.quit()
+
+    def on_escape(_: tk.Event) -> None:
+        root.quit()
+
+    canvas.bind("<Motion>", on_move)
+    canvas.bind("<ButtonPress-1>", on_click)
+    root.bind("<Escape>", on_escape)
+
+    root.mainloop()
+    root.destroy()
+
+    if not result:
+        raise RuntimeError("Selection cancelled")
+
+    return Point(**result)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     with open("static/index.html", "r", encoding="utf-8") as fp:
@@ -161,6 +287,24 @@ def screenshot() -> StreamingResponse:
     img.save(buf, format="JPEG", quality=85)
     buf.seek(0)
     return StreamingResponse(buf, media_type="image/jpeg")
+
+
+@app.post("/api/select-region")
+def select_region() -> JSONResponse:
+    try:
+        region = select_region_overlay()
+    except Exception as exc:  # pragma: no cover - GUI/system dependent
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "region": region.model_dump()})
+
+
+@app.post("/api/select-point")
+def select_point() -> JSONResponse:
+    try:
+        point = select_point_overlay()
+    except Exception as exc:  # pragma: no cover - GUI/system dependent
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "point": point.model_dump()})
 
 
 @app.get("/api/status")
