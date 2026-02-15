@@ -255,27 +255,44 @@ class HotkeyManager:
             "Shift": "<shift>",
             "Meta": "<cmd>",
         }
-        parts = combo.split("+")
-        out = []
-        for p in parts:
-            p = p.strip()
-            out.append(mapping.get(p, p.lower()))
-        return "+".join(out)
+        tokens = [t.strip() for t in combo.split("+") if t.strip()]
+        if not tokens:
+            raise ValueError("빈 단축키는 사용할 수 없습니다.")
+
+        mods = [mapping[t] for t in tokens if t in mapping]
+        keys = [t for t in tokens if t not in mapping]
+        if len(keys) != 1:
+            raise ValueError("단축키는 마지막에 키 1개를 포함해야 합니다. 예: Ctrl+Alt+S")
+
+        key = keys[0]
+        k = key.lower()
+        # pynput은 일반 키 단독일 때도 <x>, 함수키는 <f8> 형태를 안정적으로 요구
+        if len(k) == 1 and (k.isalnum() or k in {"`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/"}):
+            key_part = f"<{k}>"
+        elif k.startswith("f") and k[1:].isdigit():
+            key_part = f"<{k}>"
+        elif k in {"space", "enter", "tab", "esc", "escape", "up", "down", "left", "right", "home", "end", "pageup", "pagedown", "insert", "delete", "backspace"}:
+            alias = "esc" if k == "escape" else k
+            key_part = f"<{alias}>"
+        else:
+            key_part = f"<{k}>"
+
+        return "+".join(mods + [key_part])
 
     def apply(self, cfg: HotkeyConfig) -> None:
-        if self._listener:
-            self._listener.stop()
-
         start_key = self._to_pynput(cfg.start_hotkey)
         stop_key = self._to_pynput(cfg.stop_hotkey)
 
-        self._listener = keyboard.GlobalHotKeys(
+        new_listener = keyboard.GlobalHotKeys(
             {
                 start_key: lambda: self._monitor_state.start(source=f"단축키 {cfg.start_hotkey}"),
                 stop_key: lambda: self._monitor_state.stop(source=f"단축키 {cfg.stop_hotkey}"),
             }
         )
-        self._listener.start()
+        new_listener.start()
+        if self._listener:
+            self._listener.stop()
+        self._listener = new_listener
 
 
 overlay = StatusOverlay()
@@ -397,8 +414,11 @@ def select_point() -> JSONResponse:
 def set_hotkeys(cfg: HotkeyConfig) -> JSONResponse:
     if cfg.start_hotkey == cfg.stop_hotkey:
         raise HTTPException(status_code=400, detail="시작/중지 단축키는 달라야 합니다.")
+    try:
+        hotkey_manager.apply(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"단축키 형식 오류: {exc}") from exc
     monitor_state.hotkeys = cfg
-    hotkey_manager.apply(cfg)
     return JSONResponse({"ok": True, "hotkeys": cfg.model_dump()})
 
 
