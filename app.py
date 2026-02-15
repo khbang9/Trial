@@ -248,7 +248,7 @@ class HotkeyManager:
         self._monitor_state = monitor_state
 
     @staticmethod
-    def _to_pynput(combo: str) -> str:
+    def _combo_variants(combo: str) -> list[str]:
         mapping = {
             "Ctrl": "<ctrl>",
             "Alt": "<alt>",
@@ -264,24 +264,38 @@ class HotkeyManager:
         if len(keys) != 1:
             raise ValueError("단축키는 마지막에 키 1개를 포함해야 합니다. 예: Ctrl+Alt+S")
 
-        key = keys[0]
-        k = key.lower()
-        # pynput은 일반 키 단독일 때도 <x>, 함수키는 <f8> 형태를 안정적으로 요구
-        if len(k) == 1 and (k.isalnum() or k in {"`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/"}):
-            key_part = f"<{k}>"
-        elif k.startswith("f") and k[1:].isdigit():
-            key_part = f"<{k}>"
-        elif k in {"space", "enter", "tab", "esc", "escape", "up", "down", "left", "right", "home", "end", "pageup", "pagedown", "insert", "delete", "backspace"}:
-            alias = "esc" if k == "escape" else k
-            key_part = f"<{alias}>"
-        else:
-            key_part = f"<{k}>"
+        k = keys[0].lower()
+        specials = {
+            "space", "enter", "tab", "esc", "escape", "up", "down", "left", "right",
+            "home", "end", "pageup", "pagedown", "insert", "delete", "backspace"
+        }
 
-        return "+".join(mods + [key_part])
+        if k.startswith("f") and k[1:].isdigit():
+            variants = [f"<{k}>"]
+        elif k in specials:
+            alias = "esc" if k == "escape" else k
+            variants = [f"<{alias}>"]
+        elif len(k) == 1:
+            variants = [k, f"<{k}>"]
+        else:
+            variants = [f"<{k}>", k]
+
+        return ["+".join(mods + [v]) for v in variants]
+
+    @staticmethod
+    def _resolve_combo(combo: str) -> str:
+        last_error: Optional[Exception] = None
+        for candidate in HotkeyManager._combo_variants(combo):
+            try:
+                keyboard.HotKey.parse(candidate)
+                return candidate
+            except Exception as exc:
+                last_error = exc
+        raise ValueError(f"지원하지 않는 단축키 형식: {combo} ({last_error})")
 
     def apply(self, cfg: HotkeyConfig) -> None:
-        start_key = self._to_pynput(cfg.start_hotkey)
-        stop_key = self._to_pynput(cfg.stop_hotkey)
+        start_key = self._resolve_combo(cfg.start_hotkey)
+        stop_key = self._resolve_combo(cfg.stop_hotkey)
 
         new_listener = keyboard.GlobalHotKeys(
             {
@@ -294,11 +308,13 @@ class HotkeyManager:
             self._listener.stop()
         self._listener = new_listener
 
-
 overlay = StatusOverlay()
 monitor_state = MonitorState(overlay)
 hotkey_manager = HotkeyManager(monitor_state)
-hotkey_manager.apply(monitor_state.hotkeys)
+try:
+    hotkey_manager.apply(monitor_state.hotkeys)
+except Exception:
+    monitor_state.last_message = "전역 단축키 초기화 실패 (앱은 계속 실행됨)"
 
 
 def _build_overlay_root(title: str):
