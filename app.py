@@ -179,6 +179,13 @@ class MonitorState:
             self.last_diff_by_rule = {r.id: 0.0 for r in config.rules}
             self._add_log(f"설정 저장: {len(config.rules)}개 규칙")
 
+    def clear_config(self) -> None:
+        with self._lock:
+            self.config = None
+            self.last_diff_by_rule = {}
+            self.last_message = "설정 초기화 완료"
+            self._add_log("설정 초기화")
+
     @staticmethod
     def _capture_region(region: MonitorRegion) -> np.ndarray:
         monitor = {"left": region.x, "top": region.y, "width": region.width, "height": region.height}
@@ -195,7 +202,7 @@ class MonitorState:
     def start(self, source: str = "버튼") -> None:
         with self._lock:
             cfg = self.config
-        if cfg is None:
+        if cfg is None or not cfg.rules:
             raise RuntimeError("모니터링 설정이 없습니다. 먼저 구역 규칙을 저장하세요.")
 
         self.stop(show_message=False)
@@ -424,6 +431,12 @@ def select_point() -> JSONResponse:
 def set_config(config: MonitorConfig) -> JSONResponse:
     monitor_state.set_config(config)
     return JSONResponse({"ok": True, "message": "Config saved."})
+
+
+@app.post("/api/clear-config")
+def clear_config() -> JSONResponse:
+    monitor_state.clear_config()
+    return JSONResponse({"ok": True, "message": "Config cleared."})
 
 
 @app.post("/api/hotkeys")

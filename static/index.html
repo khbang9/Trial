@@ -115,10 +115,20 @@
       function buildConfig(){ return { poll_interval_ms: Number($('poll').value), rules: state.rules }; }
 
       async function saveConfig(show=true){
-        if(!state.rules.length){ if(show) setStatus('규칙을 1개 이상 추가하세요.'); return; }
+        if(!state.rules.length){
+          const r = await fetch('/api/clear-config',{method:'POST'});
+          const d = await r.json();
+          if(show) setStatus(d.message || '설정 초기화 완료');
+          return true;
+        }
         const r = await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});
         const d = await r.json();
+        if(!r.ok || !d.ok){
+          if(show) setStatus(`설정 저장 실패: ${d.detail || 'error'}`);
+          return false;
+        }
         if(show) setStatus(d.message || '설정 저장 완료');
+        return true;
       }
 
       async function saveHotkeys(){
@@ -150,18 +160,19 @@
         state.rules.push(rule); renderRules(); setStatus(`규칙 추가됨: ${rule.name}`);
       });
 
-      $('rules').addEventListener('click', (e)=>{
+      $('rules').addEventListener('click', async (e)=>{
         const btn = e.target.closest('.delete-rule');
         if(!btn) return;
         const id = btn.dataset.id;
         state.rules = state.rules.filter(r=>r.id !== id);
         renderRules();
-        setStatus('규칙 삭제 완료');
+        await saveConfig(false);
+        setStatus('규칙 삭제 완료 · 서버 설정 반영됨');
       });
 
       $('saveConfig').addEventListener('click', ()=>saveConfig(true));
       $('setHotkeys').addEventListener('click', saveHotkeys);
-      $('startBtn').addEventListener('click', async ()=>{ await saveConfig(false); const r=await fetch('/api/start',{method:'POST'}); const d=await r.json(); setStatus(d.message||'모니터링 시작','running'); });
+      $('startBtn').addEventListener('click', async ()=>{ const ok = await saveConfig(false); if(!ok) return; const r=await fetch('/api/start',{method:'POST'}); const d=await r.json(); if(!r.ok) return setStatus(d.detail || '시작 실패'); setStatus(d.message||'모니터링 시작','running'); });
       $('stopBtn').addEventListener('click', async ()=>{ const r=await fetch('/api/stop',{method:'POST'}); const d=await r.json(); setStatus(d.message||'모니터링 해제'); });
 
       document.addEventListener('keydown', (e)=>{
