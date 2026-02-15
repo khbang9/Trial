@@ -6,9 +6,9 @@
     <title>다중 구역 모니터링</title>
     <style>
       body { margin: 0; font-family: Inter, "Pretendard", sans-serif; background:#0b1220; color:#e2e8f0; }
-      .floating { position: fixed; top: 12px; left: 12px; width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: rgba(15,23,42,.95); border:1px solid #334155; border-radius:14px; padding:12px; }
+      .floating { position: fixed; top: 12px; left: 12px; width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: rgba(15,23,42,.95); border:1px solid #334155; border-radius:14px; padding:12px; }
       .chip { position: fixed; top: 12px; right: 12px; border:1px solid #22d3ee; border-radius:10px; padding:6px 10px; background: rgba(15,23,42,.88); color:#86efac; display:none; z-index:99; font-size:12px; }
-      h2 { margin:0; font-size:1.7rem; }
+      h2 { margin:0; font-size:1.6rem; }
       .desc { color:#94a3b8; font-size:12px; margin:4px 0 8px; }
       .status-banner { margin-top:8px; border-radius:10px; padding:8px 10px; font-size:13px; background:#1e293b; border:1px solid #334155; }
       .status-banner.running { background:#0f3f38; border-color:#34d399; color:#d1fae5; }
@@ -24,15 +24,17 @@
       .primary { background:linear-gradient(135deg,#22d3ee,#38bdf8); color:#06202b; }
       .secondary { background:#334155; color:#dbeafe; }
       .danger { background:#ef4444; color:#fff; }
-      .rules { max-height:140px; overflow:auto; }
-      .rule { border:1px solid #334155; border-radius:9px; padding:7px; margin-top:6px; font-size:12px; }
+      .rules,.logs { max-height:170px; overflow:auto; }
+      .rule, .log-item { border:1px solid #334155; border-radius:9px; padding:7px; margin-top:6px; font-size:12px; }
+      .rule-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+      .delete-rule { background:#7f1d1d; color:#fee2e2; padding:4px 8px; font-size:11px; }
     </style>
   </head>
   <body>
     <div id="chip" class="chip">모니터링중</div>
     <div class="floating">
       <h2>🎯 다중 구역 모니터링</h2>
-      <div class="desc">구역별 규칙 추가: 1번 구역→A 클릭, 2번 구역→B 클릭 구조</div>
+      <div class="desc">구역별 규칙: 1번 구역→A 클릭, 2번 구역→B 클릭</div>
       <div id="banner" class="status-banner">대기중</div>
 
       <details open>
@@ -88,6 +90,11 @@
           </div>
         </div>
       </details>
+
+      <details open>
+        <summary>실행 로그 (최근 40개)</summary>
+        <div class="box"><div id="logs" class="logs"></div></div>
+      </details>
     </div>
 
     <script>
@@ -100,8 +107,11 @@
         b.className = `status-banner ${mode}`;
       }
       function uid() { return `rule-${Date.now()}-${Math.floor(Math.random()*1000)}`; }
-      function ruleCard(r, i) { return `<div class="rule"><b>${i+1}. ${r.name}</b> · th:${r.threshold}, cd:${r.cooldown_ms}ms<br>영역 (${r.region.x},${r.region.y}) ${r.region.width}×${r.region.height}<br>→ ${r.actions[0].label} (${r.actions[0].x},${r.actions[0].y})</div>`; }
+      function ruleCard(r, i) {
+        return `<div class="rule"><div class="rule-head"><b>${i+1}. ${r.name}</b><button class="delete-rule" data-id="${r.id}">삭제</button></div>th:${r.threshold}, cd:${r.cooldown_ms}ms<br>영역 (${r.region.x},${r.region.y}) ${r.region.width}×${r.region.height}<br>→ ${r.actions[0].label} (${r.actions[0].x},${r.actions[0].y})</div>`;
+      }
       function renderRules(){ $('rules').innerHTML = state.rules.map(ruleCard).join('') || '<div class="desc">규칙 없음</div>'; }
+      function renderLogs(items){ $('logs').innerHTML = (items||[]).map(v=>`<div class="log-item">${v}</div>`).join('') || '<div class="desc">아직 로그가 없습니다.</div>'; }
       function buildConfig(){ return { poll_interval_ms: Number($('poll').value), rules: state.rules }; }
 
       async function saveConfig(show=true){
@@ -140,6 +150,15 @@
         state.rules.push(rule); renderRules(); setStatus(`규칙 추가됨: ${rule.name}`);
       });
 
+      $('rules').addEventListener('click', (e)=>{
+        const btn = e.target.closest('.delete-rule');
+        if(!btn) return;
+        const id = btn.dataset.id;
+        state.rules = state.rules.filter(r=>r.id !== id);
+        renderRules();
+        setStatus('규칙 삭제 완료');
+      });
+
       $('saveConfig').addEventListener('click', ()=>saveConfig(true));
       $('setHotkeys').addEventListener('click', saveHotkeys);
       $('startBtn').addEventListener('click', async ()=>{ await saveConfig(false); const r=await fetch('/api/start',{method:'POST'}); const d=await r.json(); setStatus(d.message||'모니터링 시작','running'); });
@@ -165,6 +184,7 @@
           else if(s.running) setStatus(s.last_message,'running');
           else setStatus(s.last_message);
         }
+        renderLogs(s.event_logs || []);
       }, 900);
 
       renderRules();

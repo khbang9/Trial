@@ -4,6 +4,7 @@ import io
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
 import mss
@@ -147,10 +148,16 @@ class MonitorState:
         self.last_message = "대기중"
         self.last_triggered_rule: Optional[str] = None
         self.completed_count: int = 0
+        self.event_logs: List[str] = []
         self._overlay = overlay
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+
+    def _add_log(self, text: str) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.event_logs.insert(0, f"[{ts}] {text}")
+        self.event_logs = self.event_logs[:40]
 
     def status(self) -> dict:
         with self._lock:
@@ -159,6 +166,7 @@ class MonitorState:
                 "last_message": self.last_message,
                 "last_triggered_rule": self.last_triggered_rule,
                 "completed_count": self.completed_count,
+                "event_logs": self.event_logs,
                 "last_diff_by_rule": self.last_diff_by_rule,
                 "config": self.config.model_dump() if self.config else None,
                 "hotkeys": self.hotkeys.model_dump(),
@@ -169,6 +177,7 @@ class MonitorState:
             self.config = config
             self.last_message = f"설정 저장 완료 ({len(config.rules)}개 구역)"
             self.last_diff_by_rule = {r.id: 0.0 for r in config.rules}
+            self._add_log(f"설정 저장: {len(config.rules)}개 규칙")
 
     @staticmethod
     def _capture_region(region: MonitorRegion) -> np.ndarray:
@@ -196,6 +205,7 @@ class MonitorState:
             self.last_triggered_rule = None
             self._stop.clear()
             self.completed_count = 0
+            self._add_log(f"모니터링 시작 ({source})")
         self._overlay.show(f"모니터링중 · 중지:{self.hotkeys.stop_hotkey}")
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -209,6 +219,7 @@ class MonitorState:
             self.running = False
             if show_message:
                 self.last_message = f"모니터링 해제 ({source})"
+                self._add_log(f"모니터링 해제 ({source})")
         self._overlay.hide()
         self._thread = None
 
@@ -239,6 +250,7 @@ class MonitorState:
                             self.last_message = f"✅ 액션 수행 완료: {rule.name} · 모니터링 자동 해제"
                             self.completed_count += 1
                             self.running = False
+                            self._add_log(f"트리거: {rule.name} → {rule.actions[0].label} 클릭 수행")
                         self._overlay.event(f"완료: {rule.name}")
                         self._stop.set()
                         break
