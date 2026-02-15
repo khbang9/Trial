@@ -154,6 +154,11 @@ class MonitorState:
                 "config": self.config.model_dump() if self.config else None,
             }
 
+    def set_config(self, config: MonitorConfig) -> None:
+        with self._lock:
+            self.config = config
+            self.last_message = "설정 저장 완료"
+
     def start(self, config: Optional[MonitorConfig] = None, source: str = "버튼") -> None:
         if config is not None:
             with self._lock:
@@ -293,14 +298,26 @@ class HotkeyManager:
                 last_error = exc
         raise ValueError(f"지원하지 않는 단축키 형식: {combo} ({last_error})")
 
+    def _safe_start(self, source: str) -> None:
+        try:
+            self._monitor_state.start(source=source)
+        except Exception as exc:
+            self._monitor_state.last_message = f"시작 실패: {exc}"
+
+    def _safe_stop(self, source: str) -> None:
+        try:
+            self._monitor_state.stop(source=source)
+        except Exception as exc:
+            self._monitor_state.last_message = f"중지 실패: {exc}"
+
     def apply(self, cfg: HotkeyConfig) -> None:
         start_key = self._resolve_combo(cfg.start_hotkey)
         stop_key = self._resolve_combo(cfg.stop_hotkey)
 
         new_listener = keyboard.GlobalHotKeys(
             {
-                start_key: lambda: self._monitor_state.start(source=f"단축키 {cfg.start_hotkey}"),
-                stop_key: lambda: self._monitor_state.stop(source=f"단축키 {cfg.stop_hotkey}"),
+                start_key: lambda: self._safe_start(source=f"단축키 {cfg.start_hotkey}"),
+                stop_key: lambda: self._safe_stop(source=f"단축키 {cfg.stop_hotkey}"),
             }
         )
         new_listener.start()
@@ -425,6 +442,13 @@ def select_point() -> JSONResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse({"ok": True, "point": point.model_dump()})
 
+
+
+
+@app.post("/api/config")
+def set_config(config: MonitorConfig) -> JSONResponse:
+    monitor_state.set_config(config)
+    return JSONResponse({"ok": True, "message": "Config saved."})
 
 @app.post("/api/hotkeys")
 def set_hotkeys(cfg: HotkeyConfig) -> JSONResponse:
