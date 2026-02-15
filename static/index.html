@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>화면 변화 감지 자동 클릭</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --muted: #94a3b8;
+        --accent: #22d3ee;
+        --accent-2: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, "Pretendard", "Apple SD Gothic Neo", sans-serif;
+        background: radial-gradient(circle at 20% 0%, #1e293b, #0b1022 40%, #020617 100%);
+        color: #e2e8f0;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 380px 1fr;
+        min-height: 100vh;
+        gap: 18px;
+        padding: 18px;
+      }
+      .panel {
+        background: rgba(17, 24, 39, 0.88);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 16px;
+        backdrop-filter: blur(10px);
+        padding: 18px;
+      }
+      h1 { margin: 0 0 12px; font-size: 1.3rem; }
+      h2 { margin: 14px 0 8px; font-size: 1rem; color: #bae6fd; }
+      label { display:block; font-size: 0.8rem; margin: 7px 0 4px; color: var(--muted); }
+      input, select {
+        width: 100%;
+        background: rgba(2, 6, 23, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        color: #e2e8f0;
+        border-radius: 10px;
+        padding: 9px;
+      }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      button {
+        border: 0;
+        border-radius: 10px;
+        color: white;
+        padding: 10px 12px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .btn { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #06202b; }
+      .btn.secondary { background: #334155; color: #dbeafe; }
+      .btn.danger { background: #ef4444; }
+      .button-group { display: flex; gap: 8px; margin-top: 10px; }
+      .viewer {
+        position: relative;
+        overflow: hidden;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: #0b1224;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+      }
+      canvas { max-width: 100%; max-height: calc(100vh - 36px); cursor: crosshair; }
+      .status {
+        margin-top: 10px;
+        padding: 10px;
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.8);
+        font-size: 0.9rem;
+      }
+      ul { padding-left: 20px; }
+      .small { font-size: 0.78rem; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel">
+        <h1>🎯 화면 변화 감지 자동 클릭기</h1>
+        <div class="small">드래그로 감지 영역을 지정하고, 클릭할 좌표를 여러 개 등록한 뒤 모니터링을 시작하세요.</div>
+
+        <h2>모니터링 설정</h2>
+        <div class="row">
+          <div><label>Threshold</label><input id="threshold" type="number" value="12" min="0.1" step="0.1" /></div>
+          <div><label>폴링(ms)</label><input id="poll" type="number" value="250" min="50" step="50" /></div>
+        </div>
+        <div><label>쿨다운(ms)</label><input id="cooldown" type="number" value="1000" min="0" step="100" /></div>
+
+        <h2>클릭 액션 추가</h2>
+        <div class="row">
+          <div><label>X</label><input id="actX" type="number" min="0" value="300" /></div>
+          <div><label>Y</label><input id="actY" type="number" min="0" value="300" /></div>
+        </div>
+        <div class="row">
+          <div><label>클릭 횟수</label><input id="actClicks" type="number" min="1" max="20" value="1" /></div>
+          <div><label>인터벌(ms)</label><input id="actInterval" type="number" min="0" value="100" /></div>
+        </div>
+        <div class="row">
+          <div><label>버튼</label><select id="actButton"><option value="left">left</option><option value="right">right</option><option value="middle">middle</option></select></div>
+          <div><label>라벨</label><input id="actLabel" type="text" value="Action" /></div>
+        </div>
+        <div class="button-group">
+          <button class="btn secondary" id="addAction">액션 추가</button>
+          <button class="btn secondary" id="clearActions">목록 비우기</button>
+        </div>
+        <ul id="actionList"></ul>
+
+        <div class="button-group">
+          <button class="btn" id="startBtn">모니터링 시작</button>
+          <button class="btn danger" id="stopBtn">중지</button>
+          <button class="btn secondary" id="refreshBtn">화면 새로고침</button>
+        </div>
+        <div class="status" id="statusBox">상태: 대기중</div>
+      </section>
+
+      <section class="viewer panel">
+        <canvas id="screenCanvas" width="1280" height="720"></canvas>
+      </section>
+    </main>
+
+    <script>
+      const canvas = document.getElementById('screenCanvas');
+      const ctx = canvas.getContext('2d');
+      const statusBox = document.getElementById('statusBox');
+      const actionListEl = document.getElementById('actionList');
+
+      let image = new Image();
+      let monitorRegion = null;
+      let dragging = false;
+      let startPos = null;
+      let currentPos = null;
+      let actions = [];
+      let scaleX = 1;
+      let scaleY = 1;
+
+      function setStatus(text) { statusBox.textContent = text; }
+
+      async function loadScreenshot() {
+        const ts = Date.now();
+        image = new Image();
+        image.onload = () => {
+          canvas.width = image.width;
+          canvas.height = image.height;
+          draw();
+          scaleX = image.width / canvas.clientWidth;
+          scaleY = image.height / canvas.clientHeight;
+        };
+        image.src = `/api/screenshot?ts=${ts}`;
+      }
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (image?.src) ctx.drawImage(image, 0, 0);
+
+        if (monitorRegion) {
+          ctx.strokeStyle = '#22d3ee';
+          ctx.lineWidth = 3;
+          ctx.setLineDash([8, 4]);
+          ctx.strokeRect(monitorRegion.x, monitorRegion.y, monitorRegion.width, monitorRegion.height);
+          ctx.fillStyle = 'rgba(34,211,238,0.2)';
+          ctx.fillRect(monitorRegion.x, monitorRegion.y, monitorRegion.width, monitorRegion.height);
+        }
+
+        if (dragging && startPos && currentPos) {
+          const x = Math.min(startPos.x, currentPos.x);
+          const y = Math.min(startPos.y, currentPos.y);
+          const w = Math.abs(startPos.x - currentPos.x);
+          const h = Math.abs(startPos.y - currentPos.y);
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x, y, w, h);
+        }
+
+        ctx.setLineDash([]);
+      }
+
+      function toScreenPos(evt) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: Math.round((evt.clientX - rect.left) * (canvas.width / rect.width)),
+          y: Math.round((evt.clientY - rect.top) * (canvas.height / rect.height)),
+        };
+      }
+
+      canvas.addEventListener('mousedown', (e) => {
+        dragging = true;
+        startPos = toScreenPos(e);
+        currentPos = startPos;
+      });
+      canvas.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        currentPos = toScreenPos(e);
+        draw();
+      });
+      canvas.addEventListener('mouseup', (e) => {
+        if (!dragging) return;
+        dragging = false;
+        currentPos = toScreenPos(e);
+        const x = Math.min(startPos.x, currentPos.x);
+        const y = Math.min(startPos.y, currentPos.y);
+        const width = Math.max(1, Math.abs(startPos.x - currentPos.x));
+        const height = Math.max(1, Math.abs(startPos.y - currentPos.y));
+        monitorRegion = { x, y, width, height };
+        setStatus(`감지영역 선택됨: (${x}, ${y}) ${width}×${height}`);
+        draw();
+      });
+
+      function renderActions() {
+        actionListEl.innerHTML = actions.map((a, i) =>
+          `<li>${i+1}. ${a.label} → (${a.x},${a.y}), ${a.clicks}회, ${a.interval_ms}ms, ${a.button}</li>`
+        ).join('');
+      }
+
+      document.getElementById('addAction').addEventListener('click', () => {
+        const action = {
+          x: Number(document.getElementById('actX').value),
+          y: Number(document.getElementById('actY').value),
+          clicks: Number(document.getElementById('actClicks').value),
+          interval_ms: Number(document.getElementById('actInterval').value),
+          button: document.getElementById('actButton').value,
+          label: document.getElementById('actLabel').value || 'Action',
+        };
+        actions.push(action);
+        renderActions();
+      });
+
+      document.getElementById('clearActions').addEventListener('click', () => {
+        actions = [];
+        renderActions();
+      });
+
+      document.getElementById('startBtn').addEventListener('click', async () => {
+        if (!monitorRegion) return setStatus('먼저 감지 영역을 드래그로 선택하세요.');
+        if (!actions.length) return setStatus('최소 1개 이상의 액션을 추가하세요.');
+
+        const payload = {
+          region: monitorRegion,
+          threshold: Number(document.getElementById('threshold').value),
+          poll_interval_ms: Number(document.getElementById('poll').value),
+          cooldown_ms: Number(document.getElementById('cooldown').value),
+          actions,
+        };
+
+        const res = await fetch('/api/start', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        setStatus(data.message || '시작됨');
+      });
+
+      document.getElementById('stopBtn').addEventListener('click', async () => {
+        const res = await fetch('/api/stop', { method: 'POST' });
+        const data = await res.json();
+        setStatus(data.message || '중지됨');
+      });
+
+      document.getElementById('refreshBtn').addEventListener('click', loadScreenshot);
+
+      setInterval(async () => {
+        const res = await fetch('/api/status');
+        const s = await res.json();
+        if (s.running) {
+          const diff = Number(s.last_diff || 0).toFixed(2);
+          setStatus(`실행중 · last diff=${diff}`);
+        }
+      }, 1000);
+
+      loadScreenshot();
+    </script>
+  </body>
+</html>
