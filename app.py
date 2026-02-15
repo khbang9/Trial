@@ -118,7 +118,7 @@ class StatusOverlay:
                     label.configure(text=text, bg="#14532d")
                     root.configure(bg="#14532d")
                     root.deiconify()
-                    root.after(1400, lambda: self._q.put(("show", text)))
+                    root.after(1800, lambda: self._q.put(("hide", "")))
                 elif mode == "hide":
                     root.withdraw()
             root.after(120, pump)
@@ -146,6 +146,7 @@ class MonitorState:
         self.last_diff_by_rule: Dict[str, float] = {}
         self.last_message = "대기중"
         self.last_triggered_rule: Optional[str] = None
+        self.completed_count: int = 0
         self._overlay = overlay
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -157,6 +158,7 @@ class MonitorState:
                 "running": self.running,
                 "last_message": self.last_message,
                 "last_triggered_rule": self.last_triggered_rule,
+                "completed_count": self.completed_count,
                 "last_diff_by_rule": self.last_diff_by_rule,
                 "config": self.config.model_dump() if self.config else None,
                 "hotkeys": self.hotkeys.model_dump(),
@@ -193,6 +195,7 @@ class MonitorState:
             self.last_message = f"모니터링 시작 ({source})"
             self.last_triggered_rule = None
             self._stop.clear()
+            self.completed_count = 0
         self._overlay.show(f"모니터링중 · 중지:{self.hotkeys.stop_hotkey}")
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -233,14 +236,19 @@ class MonitorState:
                         last_trigger_at[rule.id] = now
                         with self._lock:
                             self.last_triggered_rule = rule.name
-                            self.last_message = f"액션 수행: {rule.name}"
-                        self._overlay.event(f"액션 수행: {rule.name}")
+                            self.last_message = f"✅ 액션 수행 완료: {rule.name} · 모니터링 자동 해제"
+                            self.completed_count += 1
+                            self.running = False
+                        self._overlay.event(f"완료: {rule.name}")
+                        self._stop.set()
+                        break
                 prev_frames[rule.id] = current
 
             time.sleep(cfg.poll_interval_ms / 1000)
 
         with self._lock:
             self.running = False
+        self._overlay.hide()
 
 
 class HotkeyManager:
