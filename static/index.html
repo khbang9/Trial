@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>다중 구역 모니터링</title>
+    <style>
+      body { margin: 0; font-family: Inter, "Pretendard", sans-serif; background:#0b1220; color:#e2e8f0; }
+      .floating { position: fixed; top: 12px; left: 12px; width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: rgba(15,23,42,.95); border:1px solid #334155; border-radius:14px; padding:12px; }
+      .chip { position: fixed; top: 12px; right: 12px; border:1px solid #22d3ee; border-radius:10px; padding:6px 10px; background: rgba(15,23,42,.88); color:#86efac; display:none; z-index:99; font-size:12px; }
+      h2 { margin:0; font-size:1.6rem; }
+      .desc { color:#94a3b8; font-size:12px; margin:4px 0 8px; }
+      .status-banner { margin-top:8px; border-radius:10px; padding:8px 10px; font-size:13px; background:#1e293b; border:1px solid #334155; }
+      .status-banner.running { background:#0f3f38; border-color:#34d399; color:#d1fae5; }
+      .status-banner.done { background:#3f2f0f; border-color:#f59e0b; color:#fef3c7; }
+      details { background:#0b1224; border:1px solid #334155; border-radius:10px; margin-top:8px; }
+      summary { cursor:pointer; padding:8px 10px; font-weight:700; }
+      .box { padding: 0 10px 10px; }
+      .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+      label { font-size:12px; color:#94a3b8; display:block; margin:4px 0; }
+      input, select { width:100%; border-radius:9px; border:1px solid #334155; background:#020617; color:#e2e8f0; padding:7px; }
+      .buttons { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+      button { border:0; border-radius:9px; padding:8px 11px; font-weight:700; cursor:pointer; }
+      .primary { background:linear-gradient(135deg,#22d3ee,#38bdf8); color:#06202b; }
+      .secondary { background:#334155; color:#dbeafe; }
+      .danger { background:#ef4444; color:#fff; }
+      .rules,.logs { max-height:170px; overflow:auto; }
+      .rule, .log-item { border:1px solid #334155; border-radius:9px; padding:7px; margin-top:6px; font-size:12px; }
+      .rule-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+      .delete-rule { background:#7f1d1d; color:#fee2e2; padding:4px 8px; font-size:11px; }
+    </style>
+  </head>
+  <body>
+    <div id="chip" class="chip">모니터링중</div>
+    <div class="floating">
+      <h2>🎯 다중 구역 모니터링</h2>
+      <div class="desc">구역별 규칙: 1번 구역→A 클릭, 2번 구역→B 클릭</div>
+      <div id="banner" class="status-banner">대기중</div>
+
+      <details open>
+        <summary>전역 설정</summary>
+        <div class="box">
+          <div class="row">
+            <div><label>폴링(ms)</label><input id="poll" type="number" min="50" step="50" value="250"></div>
+            <div><label>시작 단축키</label><input id="startHotkey" readonly value="Ctrl+Alt+S"></div>
+          </div>
+          <div class="row">
+            <div><label>중지 단축키</label><input id="stopHotkey" readonly value="Ctrl+Alt+X"></div>
+            <div class="buttons" style="align-items:end"><button id="setHotkeys" class="secondary">단축키 저장</button></div>
+          </div>
+          <div class="desc">단축키 입력 후 저장 전에는 값이 유지됩니다.</div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>구역 규칙 추가</summary>
+        <div class="box">
+          <div class="row">
+            <div><label>규칙 이름</label><input id="ruleName" value="구역 1"></div>
+            <div><label>클릭 라벨</label><input id="actionLabel" value="A지점"></div>
+          </div>
+          <div class="row">
+            <div><label>Threshold</label><input id="ruleThreshold" type="number" step="0.1" value="12"></div>
+            <div><label>쿨다운(ms)</label><input id="ruleCooldown" type="number" step="100" value="1000"></div>
+          </div>
+          <div class="row">
+            <div><label>클릭 횟수</label><input id="clicks" type="number" min="1" max="20" value="1"></div>
+            <div><label>인터벌(ms)</label><input id="interval" type="number" min="0" value="80"></div>
+          </div>
+          <div class="row">
+            <div><label>버튼</label><select id="button"><option value="left">left</option><option value="right">right</option><option value="middle">middle</option></select></div>
+            <div><label>클릭 좌표</label><input id="pointText" readonly value="미선택"></div>
+          </div>
+          <div class="buttons">
+            <button id="pickRegion" class="secondary">구역 선택</button>
+            <button id="pickPoint" class="secondary">클릭점 선택</button>
+            <button id="addRule" class="primary">규칙 추가</button>
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>규칙 목록 & 실행</summary>
+        <div class="box">
+          <div id="rules" class="rules"></div>
+          <div class="buttons">
+            <button id="saveConfig" class="secondary">설정 저장</button>
+            <button id="startBtn" class="primary">모니터링 시작</button>
+            <button id="stopBtn" class="danger">중지</button>
+          </div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>실행 로그 (최근 40개)</summary>
+        <div class="box"><div id="logs" class="logs"></div></div>
+      </details>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const state = { rules: [], pickedRegion: null, pickedPoint: null, capture: null, lastMessage: '', hotkeyDirty: false };
+
+      function setStatus(t, mode='idle') {
+        const b = $('banner');
+        b.textContent = t;
+        b.className = `status-banner ${mode}`;
+      }
+      function uid() { return `rule-${Date.now()}-${Math.floor(Math.random()*1000)}`; }
+      function ruleCard(r, i) {
+        return `<div class="rule"><div class="rule-head"><b>${i+1}. ${r.name}</b><button class="delete-rule" data-id="${r.id}">삭제</button></div>th:${r.threshold}, cd:${r.cooldown_ms}ms<br>영역 (${r.region.x},${r.region.y}) ${r.region.width}×${r.region.height}<br>→ ${r.actions[0].label} (${r.actions[0].x},${r.actions[0].y})</div>`;
+      }
+      function renderRules(){ $('rules').innerHTML = state.rules.map(ruleCard).join('') || '<div class="desc">규칙 없음</div>'; }
+      function renderLogs(items){ $('logs').innerHTML = (items||[]).map(v=>`<div class="log-item">${v}</div>`).join('') || '<div class="desc">아직 로그가 없습니다.</div>'; }
+      function buildConfig(){ return { poll_interval_ms: Number($('poll').value), rules: state.rules }; }
+
+      async function saveConfig(show=true){
+        if(!state.rules.length){ if(show) setStatus('규칙을 1개 이상 추가하세요.'); return; }
+        const r = await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(buildConfig())});
+        const d = await r.json();
+        if(show) setStatus(d.message || '설정 저장 완료');
+      }
+
+      async function saveHotkeys(){
+        const payload = { start_hotkey:$('startHotkey').value, stop_hotkey:$('stopHotkey').value };
+        const r = await fetch('/api/hotkeys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const d = await r.json();
+        if(!r.ok || !d.ok) return setStatus(`단축키 저장 실패: ${d.detail || 'error'}`);
+        state.hotkeyDirty = false;
+        setStatus('단축키 저장 완료');
+      }
+
+      $('pickRegion').addEventListener('click', async ()=>{
+        setStatus('구역 선택 오버레이 실행중...');
+        const r=await fetch('/api/select-region',{method:'POST'}); const d=await r.json();
+        if(!r.ok || !d.ok) return setStatus(`구역 선택 실패: ${d.detail || 'error'}`);
+        state.pickedRegion=d.region; setStatus(`구역 선택 완료 (${d.region.width}x${d.region.height})`);
+      });
+      $('pickPoint').addEventListener('click', async ()=>{
+        setStatus('클릭점 선택 오버레이 실행중...');
+        const r=await fetch('/api/select-point',{method:'POST'}); const d=await r.json();
+        if(!r.ok || !d.ok) return setStatus(`클릭점 선택 실패: ${d.detail || 'error'}`);
+        state.pickedPoint=d.point; $('pointText').value=`(${d.point.x}, ${d.point.y})`; setStatus('클릭점 선택 완료');
+      });
+
+      $('addRule').addEventListener('click', ()=>{
+        if(!state.pickedRegion) return setStatus('구역을 먼저 선택하세요.');
+        if(!state.pickedPoint) return setStatus('클릭점을 먼저 선택하세요.');
+        const rule={ id:uid(), name:$('ruleName').value||`구역 ${state.rules.length+1}`, region:state.pickedRegion, threshold:Number($('ruleThreshold').value), cooldown_ms:Number($('ruleCooldown').value), actions:[{ x:state.pickedPoint.x,y:state.pickedPoint.y,clicks:Number($('clicks').value),interval_ms:Number($('interval').value),button:$('button').value,label:$('actionLabel').value||'Action' }]};
+        state.rules.push(rule); renderRules(); setStatus(`규칙 추가됨: ${rule.name}`);
+      });
+
+      $('rules').addEventListener('click', (e)=>{
+        const btn = e.target.closest('.delete-rule');
+        if(!btn) return;
+        const id = btn.dataset.id;
+        state.rules = state.rules.filter(r=>r.id !== id);
+        renderRules();
+        setStatus('규칙 삭제 완료');
+      });
+
+      $('saveConfig').addEventListener('click', ()=>saveConfig(true));
+      $('setHotkeys').addEventListener('click', saveHotkeys);
+      $('startBtn').addEventListener('click', async ()=>{ await saveConfig(false); const r=await fetch('/api/start',{method:'POST'}); const d=await r.json(); setStatus(d.message||'모니터링 시작','running'); });
+      $('stopBtn').addEventListener('click', async ()=>{ const r=await fetch('/api/stop',{method:'POST'}); const d=await r.json(); setStatus(d.message||'모니터링 해제'); });
+
+      document.addEventListener('keydown', (e)=>{
+        const parts=[]; if(e.ctrlKey)parts.push('Ctrl'); if(e.altKey)parts.push('Alt'); if(e.shiftKey)parts.push('Shift'); if(e.metaKey)parts.push('Meta');
+        const key=e.key.length===1?e.key.toUpperCase():e.key;
+        if(!['Control','Alt','Shift','Meta'].includes(key)) parts.push(key);
+        if(state.capture){ e.preventDefault(); $(state.capture).value = parts.join('+'); state.capture=null; state.hotkeyDirty=true; setStatus('단축키 입력됨. [단축키 저장] 클릭'); }
+      });
+      $('startHotkey').addEventListener('click', ()=>{state.capture='startHotkey'; setStatus('시작 단축키 입력 대기중...');});
+      $('stopHotkey').addEventListener('click', ()=>{state.capture='stopHotkey'; setStatus('중지 단축키 입력 대기중...');});
+
+      setInterval(async ()=>{
+        const r = await fetch('/api/status'); const s = await r.json();
+        if(s.hotkeys && !state.hotkeyDirty){ $('startHotkey').value=s.hotkeys.start_hotkey; $('stopHotkey').value=s.hotkeys.stop_hotkey; }
+        $('chip').style.display = s.running ? 'block':'none';
+        $('chip').textContent = s.running ? `모니터링중 · 중지 ${$('stopHotkey').value}` : '';
+        if(s.last_message && s.last_message !== state.lastMessage){
+          state.lastMessage = s.last_message;
+          if(s.last_message.includes('완료')) setStatus(s.last_message,'done');
+          else if(s.running) setStatus(s.last_message,'running');
+          else setStatus(s.last_message);
+        }
+        renderLogs(s.event_logs || []);
+      }, 900);
+
+      renderRules();
+      setStatus('대기중');
+    </script>
+  </body>
+</html>
