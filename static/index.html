@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>화면 변화 감지 자동 클릭</title>
+    <style>
+      body { margin: 0; font-family: Inter, "Pretendard", sans-serif; background: transparent; }
+      .floating {
+        position: fixed; top: 20px; left: 20px; width: 460px; max-height: calc(100vh - 40px);
+        overflow: auto; background: rgba(15, 23, 42, 0.94); color: #e2e8f0; border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.25); padding: 16px; box-shadow: 0 20px 40px rgba(0,0,0,0.35);
+      }
+      h1 { margin: 0 0 8px; font-size: 1.2rem; }
+      .small { font-size: 0.82rem; color: #94a3b8; margin-bottom: 10px; }
+      .section { margin-top: 12px; }
+      .section-title { color: #bae6fd; font-weight: 700; margin: 0 0 6px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      label { display: flex; align-items: center; gap: 4px; font-size: 0.8rem; color: #94a3b8; margin: 4px 0; }
+      input, select { width: 100%; border-radius: 10px; border: 1px solid #334155; background:#020617; color:#e2e8f0; padding: 9px; }
+      button { border: 0; border-radius: 10px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
+      .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+      .primary { background: linear-gradient(135deg, #22d3ee, #38bdf8); color: #06202b; }
+      .secondary { background: #334155; color: #dbeafe; }
+      .danger { background: #ef4444; color: white; }
+      .status { margin-top: 8px; font-size: 0.9rem; background: #0b1224; padding: 8px 10px; border-radius: 10px; }
+      ul { margin: 8px 0; padding-left: 18px; }
+      .tip {
+        position: relative; display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; border-radius: 999px; background: #334155; color: #bae6fd;
+        font-size: 11px; cursor: help;
+      }
+      .tip:hover::after {
+        content: attr(data-tip);
+        position: absolute;
+        top: calc(100% + 8px);
+        left: -20px;
+        width: 240px;
+        background: #020617;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 8px;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: normal;
+        z-index: 20;
+      }
+      .kbd-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .hint { font-size: 0.75rem; color: #94a3b8; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="floating">
+      <h1>🎯 화면 변화 감지 자동 클릭기</h1>
+      <div class="small">설정 메뉴만 여기서 하고, 영역/클릭 위치는 실제 화면에서 오버레이로 직접 선택하세요.</div>
+
+      <div class="section">
+        <div class="section-title">감지 영역</div>
+        <div class="buttons">
+          <button id="selectRegion" class="primary">영역 설정하기 (플로팅)</button>
+        </div>
+        <div id="regionInfo" class="status">감지영역: 미선택</div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">모니터링 설정</div>
+        <div class="row">
+          <div>
+            <label>
+              Threshold
+              <span class="tip" data-tip="프레임 변화 민감도입니다. 작을수록 작은 변화에도 반응합니다. 보통 6~12(민감), 12~25(기본), 25 이상(큰 변화만) 권장.">i</span>
+            </label>
+            <input id="threshold" type="number" value="12" min="0.1" step="0.1" />
+          </div>
+          <div>
+            <label>폴링(ms)</label>
+            <input id="poll" type="number" value="250" min="50" step="50" />
+          </div>
+        </div>
+        <div>
+          <label>
+            쿨다운(ms)
+            <span class="tip" data-tip="한 번 반응한 뒤 다음 반응까지 기다리는 시간입니다. 0~300은 연타 성향, 500~1500은 일반 추천, 2000 이상은 오작동 방지에 유리합니다.">i</span>
+          </label>
+          <input id="cooldown" type="number" value="1000" min="0" step="100" />
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">단축키 설정</div>
+        <div class="row">
+          <div>
+            <label>시작 단축키</label>
+            <div class="kbd-row">
+              <input id="startHotkey" type="text" readonly value="Ctrl+Alt+S" />
+              <button id="captureStartHotkey" class="secondary">입력</button>
+            </div>
+          </div>
+          <div>
+            <label>중지 단축키</label>
+            <div class="kbd-row">
+              <input id="stopHotkey" type="text" readonly value="Ctrl+Alt+X" />
+              <button id="captureStopHotkey" class="secondary">입력</button>
+            </div>
+          </div>
+        </div>
+        <div class="hint">※ 단축키는 이 페이지가 열린 상태에서 동작합니다. (예: Ctrl+Alt+S 시작, Ctrl+Alt+X 중지)</div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">클릭 액션 추가</div>
+        <div class="buttons">
+          <button class="secondary" id="pickActionPoint">클릭 위치 화면에서 선택</button>
+        </div>
+        <div class="row">
+          <div><label>X</label><input id="actX" type="number" min="0" value="300" /></div>
+          <div><label>Y</label><input id="actY" type="number" min="0" value="300" /></div>
+        </div>
+        <div class="row">
+          <div><label>클릭 횟수</label><input id="actClicks" type="number" min="1" max="20" value="1" /></div>
+          <div><label>인터벌(ms)</label><input id="actInterval" type="number" min="0" value="100" /></div>
+        </div>
+        <div class="row">
+          <div><label>버튼</label><select id="actButton"><option value="left">left</option><option value="right">right</option><option value="middle">middle</option></select></div>
+          <div><label>라벨</label><input id="actLabel" type="text" value="Action" /></div>
+        </div>
+        <div class="buttons">
+          <button class="secondary" id="addAction">액션 추가</button>
+          <button class="secondary" id="clearActions">목록 비우기</button>
+        </div>
+        <ul id="actionList"></ul>
+      </div>
+
+      <div class="buttons">
+        <button class="primary" id="startBtn">모니터링 시작</button>
+        <button class="danger" id="stopBtn">중지</button>
+      </div>
+      <div class="status" id="statusBox">상태: 대기중</div>
+    </div>
+
+    <script>
+      const statusBox = document.getElementById('statusBox');
+      const regionInfo = document.getElementById('regionInfo');
+      const actionListEl = document.getElementById('actionList');
+      const startHotkeyInput = document.getElementById('startHotkey');
+      const stopHotkeyInput = document.getElementById('stopHotkey');
+      let monitorRegion = null;
+      let actions = [];
+      let hotkeys = {
+        start: localStorage.getItem('startHotkey') || 'Ctrl+Alt+S',
+        stop: localStorage.getItem('stopHotkey') || 'Ctrl+Alt+X',
+      };
+      let captureTarget = null;
+
+      function setStatus(text) { statusBox.textContent = text; }
+      function setRegionText() {
+        if (!monitorRegion) {
+          regionInfo.textContent = '감지영역: 미선택';
+          return;
+        }
+        regionInfo.textContent = `감지영역: (${monitorRegion.x}, ${monitorRegion.y}) ${monitorRegion.width}×${monitorRegion.height}`;
+      }
+      function renderActions() {
+        actionListEl.innerHTML = actions.map((a, i) => `<li>${i + 1}. ${a.label} → (${a.x},${a.y}), ${a.clicks}회, ${a.interval_ms}ms, ${a.button}</li>`).join('');
+      }
+      function renderHotkeys() {
+        startHotkeyInput.value = hotkeys.start;
+        stopHotkeyInput.value = hotkeys.stop;
+      }
+      function normalizeCombo(e) {
+        const parts = [];
+        if (e.ctrlKey) parts.push('Ctrl');
+        if (e.altKey) parts.push('Alt');
+        if (e.shiftKey) parts.push('Shift');
+        if (e.metaKey) parts.push('Meta');
+        const key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+        if (!['Control', 'Alt', 'Shift', 'Meta'].includes(key)) parts.push(key);
+        return parts.join('+');
+      }
+
+      async function startMonitoring() {
+        if (!monitorRegion) return setStatus('먼저 [영역 설정하기]를 눌러 감지영역을 선택하세요.');
+        if (!actions.length) return setStatus('최소 1개 액션을 추가하세요.');
+
+        const payload = {
+          region: monitorRegion,
+          threshold: Number(document.getElementById('threshold').value),
+          poll_interval_ms: Number(document.getElementById('poll').value),
+          cooldown_ms: Number(document.getElementById('cooldown').value),
+          actions,
+        };
+
+        const res = await fetch('/api/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        setStatus(data.message || '시작됨');
+      }
+
+      async function stopMonitoring() {
+        const res = await fetch('/api/stop', { method: 'POST' });
+        const data = await res.json();
+        setStatus(data.message || '중지됨');
+      }
+
+      document.getElementById('selectRegion').addEventListener('click', async () => {
+        setStatus('영역 오버레이를 띄우는 중...');
+        const res = await fetch('/api/select-region', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setStatus(`영역 선택 실패: ${data.detail || 'unknown error'}`);
+          return;
+        }
+        monitorRegion = data.region;
+        setRegionText();
+        setStatus('감지영역이 설정되었습니다.');
+      });
+
+      document.getElementById('pickActionPoint').addEventListener('click', async () => {
+        setStatus('클릭 위치 오버레이를 띄우는 중...');
+        const res = await fetch('/api/select-point', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setStatus(`클릭 위치 선택 실패: ${data.detail || 'unknown error'}`);
+          return;
+        }
+        document.getElementById('actX').value = data.point.x;
+        document.getElementById('actY').value = data.point.y;
+        setStatus(`클릭 위치 선택 완료: (${data.point.x}, ${data.point.y})`);
+      });
+
+      document.getElementById('addAction').addEventListener('click', () => {
+        actions.push({
+          x: Number(document.getElementById('actX').value),
+          y: Number(document.getElementById('actY').value),
+          clicks: Number(document.getElementById('actClicks').value),
+          interval_ms: Number(document.getElementById('actInterval').value),
+          button: document.getElementById('actButton').value,
+          label: document.getElementById('actLabel').value || 'Action',
+        });
+        renderActions();
+      });
+
+      document.getElementById('clearActions').addEventListener('click', () => {
+        actions = [];
+        renderActions();
+      });
+
+      document.getElementById('startBtn').addEventListener('click', startMonitoring);
+      document.getElementById('stopBtn').addEventListener('click', stopMonitoring);
+
+      document.getElementById('captureStartHotkey').addEventListener('click', () => {
+        captureTarget = 'start';
+        setStatus('시작 단축키 입력 대기중... 원하는 키 조합을 누르세요.');
+      });
+
+      document.getElementById('captureStopHotkey').addEventListener('click', () => {
+        captureTarget = 'stop';
+        setStatus('중지 단축키 입력 대기중... 원하는 키 조합을 누르세요.');
+      });
+
+      document.addEventListener('keydown', async (e) => {
+        const combo = normalizeCombo(e);
+
+        if (captureTarget) {
+          e.preventDefault();
+          if (combo === hotkeys.start || combo === hotkeys.stop) {
+            setStatus('중복 단축키는 사용할 수 없습니다. 다른 키를 입력하세요.');
+            return;
+          }
+          hotkeys[captureTarget] = combo;
+          localStorage.setItem(`${captureTarget}Hotkey`, combo);
+          renderHotkeys();
+          setStatus(`${captureTarget === 'start' ? '시작' : '중지'} 단축키 설정: ${combo}`);
+          captureTarget = null;
+          return;
+        }
+
+        if (combo === hotkeys.start) {
+          e.preventDefault();
+          await startMonitoring();
+        } else if (combo === hotkeys.stop) {
+          e.preventDefault();
+          await stopMonitoring();
+        }
+      });
+
+      setInterval(async () => {
+        const res = await fetch('/api/status');
+        const s = await res.json();
+        if (s.running) {
+          const diff = Number(s.last_diff || 0).toFixed(2);
+          setStatus(`실행중 · last diff=${diff}`);
+        }
+      }, 1000);
+
+      setRegionText();
+      renderHotkeys();
+    </script>
+  </body>
+</html>
